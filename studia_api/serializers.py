@@ -1,9 +1,9 @@
 from rest_framework import serializers
-from .models import Stock
 
-class StockSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Stock
-        fields = ['id', 'name', 'symbol', 'price']
-
-
+class StockSerializer(serializers.Serializer):
+    symbol = serializers.CharField()
+    price = serializers.DecimalField(max_digits=15, decimal_places=2)
+    high = serializers.DecimalField(max_digits=15, decimal_places=2, required=False)
+    low = serializers.DecimalField(max_digits=15, decimal_places=2, required=False)
+    open = serializers.DecimalField(max_digits=15, decimal_places=2, required=False)
+    previous_close = serializers.DecimalField(max_digits=15, decimal_places=2, required=False)

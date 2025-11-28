@@ -1,12 +1,9 @@
 from abc import abstractmethod, ABC
 from decimal import Decimal
-
 from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.response import Response
-
-from studia_api.models import Stock, UserBalance, WalletItem
-
+from .models import UserBalance, WalletItem
 
 class TransactionError(Exception):
     pass
@@ -14,17 +11,17 @@ class TransactionError(Exception):
 class Transaction:
     fee = None
 
-    def __init__(self, user_id, stock_id, quantity, valuation_strategy):
+    def __init__(self, user_id, stock, quantity, valuation_strategy):
         self.user_id = user_id
-        self.stock = stock_id
+        self.stock = stock
         self._quantity = quantity
         self.valuation_strategy = valuation_strategy
 
     @classmethod
-    def from_dict(cls, user_id, stock_symbol, quantity, valuation_strategy):
+    def from_dict(cls, user_id, stock, quantity, valuation_strategy):
         return cls(
             user_id=user_id,
-            stock_id=stock_symbol,
+            stock=stock,
             quantity=quantity,
             valuation_strategy=valuation_strategy
         )
@@ -46,6 +43,7 @@ class TransactionHelper:
     @staticmethod
     def calculate_total(price, quantity):
         return price * quantity
+
     @staticmethod
     def calculate_fee(price, quantity, fee_percentage):
         return (price * quantity) * fee_percentage
@@ -71,21 +69,15 @@ class FeeValuation(ValuationStrategy):
 class BuyTransaction(Transaction):
     fee = Decimal("0.03")
 
-    def __init__(self, user_id, stock_id, quantity):
+    def __init__(self, user_id, stock, quantity):
         strategy = FeeValuation(fee_percentage=self.fee)
-        super().__init__(user_id=user_id, stock_id=stock_id, quantity=quantity, valuation_strategy=strategy)
+        super().__init__(user_id=user_id, stock=stock, quantity=quantity, valuation_strategy=strategy)
 
-    # Example fee percentage
     def execute(self):
         try:
             user = User.objects.get(id=self.user_id)
         except User.DoesNotExist:
             raise TransactionError("Użytkownik nie istnieje")
-
-        try:
-            stock = Stock.objects.get(id=self.stock)
-        except Stock.DoesNotExist:
-            raise TransactionError("Akcja nie istnieje")
 
         quantity = int(self.quantity)
         if quantity <= 0:
@@ -93,25 +85,30 @@ class BuyTransaction(Transaction):
 
         user_balance = UserBalance.objects.get(user=user)
 
-        if user_balance.balance < stock.price * quantity:
+        stock_price = Decimal(self.stock['price'])
+        total = self.valuation_strategy.calculate(stock_price, quantity)
+
+        if user_balance.balance < total:
             raise TransactionError("Brak wystarczających środków na koncie użytkownika")
 
-        total = self.valuation_strategy.calculate(stock.price, quantity)
         user_balance.balance -= total
         user_balance.save()
 
-        wallet_item, created = WalletItem.objects.get_or_create(user=user, stock=stock)
+        wallet_item, created = WalletItem.objects.get_or_create(
+            user=user, stock_symbol=self.stock['symbol']
+        )
         wallet_item.quantity += quantity
         wallet_item.save()
 
         return Response({'message': 'Zakupiono akcje pomyślnie.', 'new_balance': user_balance.balance}, status=status.HTTP_200_OK)
 
+
 class SellStockTransaction(Transaction):
     @classmethod
-    def from_dict(cls, user_id, stock_symbol, quantity):
+    def from_dict(cls, user_id, stock, quantity):
         return cls(
             user_id=user_id,
-            stock_id=stock_symbol,
+            stock=stock,
             quantity=quantity,
             valuation_strategy=SimpleValuation()
         )
@@ -119,21 +116,19 @@ class SellStockTransaction(Transaction):
     def execute(self):
         try:
             user = User.objects.get(id=self.user_id)
-            stock = Stock.objects.get(symbol=self.stock)
+            print(self.stock)
+            wallet_item = WalletItem.objects.get(user=user, stock_symbol=self.stock['stock_symbol'])
             balance = UserBalance.objects.get(user=user)
-            wallet_item = WalletItem.objects.get(user=user, stock=stock)
-        except (User.DoesNotExist, Stock.DoesNotExist, UserBalance.DoesNotExist, WalletItem.DoesNotExist):
-            raise TransactionError("Nie znaleziono użytkownika, akcji lub portfela")
+        except (User.DoesNotExist, WalletItem.DoesNotExist, UserBalance.DoesNotExist):
+            raise TransactionError("Nie znaleziono użytkownika lub akcji w portfelu")
 
-        try:
-            quantity = int(self.quantity)
-        except ValueError:
-            raise TransactionError("Nieprawidłowa ilość akcji do sprzedaży")
-
+        quantity = int(self.quantity)
         if quantity <= 0 or quantity > wallet_item.quantity:
             raise TransactionError("Nieprawidłowa ilość akcji do sprzedaży")
 
-        total_value = self.valuation_strategy.calculate(stock.price, quantity)
+        stock_price = Decimal(self.stock['stock_price'])
+        total_value = self.valuation_strategy.calculate(stock_price, quantity)
+
         wallet_item.quantity -= quantity
         if wallet_item.quantity == 0:
             wallet_item.delete()
@@ -143,7 +138,4 @@ class SellStockTransaction(Transaction):
         balance.balance += total_value
         balance.save()
 
-        return Response({
-            'message': 'Sprzedano akcje',
-            'new_balance': balance.balance
-        }, status=200)
+        return Response({'message': 'Sprzedano akcje', 'new_balance': balance.balance}, status=200)
